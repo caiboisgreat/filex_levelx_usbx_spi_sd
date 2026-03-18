@@ -66,6 +66,7 @@
  * =========================================================================*/
 #define MSC_BLOCK_SIZE          512U
 #define SD_TRANSFER_TIMEOUT_MS  5000U   /* polling timeout for SDIO HAL */
+#define SD_MAX_RETRIES          3U      /* retry count for SD read/write */
 
 /* Low-LBA bootstrap cache: buffers metadata writes before LevelX is ready.
    Covers LBA 0-3071 (3072 * 512 = 1.5 MB), spanning the FAT boot sector at
@@ -385,13 +386,23 @@ UINT ux_device_msc_media_status_lun1(VOID *storage, ULONG lun, ULONG media_id,
 {
     (void)storage; (void)lun; (void)media_id;
 
-  /* Be tolerant during enumeration.
-     Windows can issue TEST UNIT READY / READ CAPACITY while the HAL state
-     machine is still transitioning after card init. Reporting NOT_READY
-     here suppresses the disk object entirely. Real I/O validity is still
-     enforced by media_read_lun1 / media_write_lun1 below. */
-  *media_status = 0;
-  return UX_SUCCESS;
+    /* Permanently disable SDIO-related interrupts.  CubeMX enables them in
+       HAL_SD_MspInit / MX_DMA_Init, but they race with polling-mode
+       HAL_SD_ReadBlocks / WriteBlocks and corrupt the HAL state machine.
+       This is idempotent, so safe to call on every TEST UNIT READY.      */
+    HAL_NVIC_DisableIRQ(SDIO_IRQn);
+    HAL_NVIC_DisableIRQ(DMA2_Stream3_IRQn);   /* SDIO RX DMA */
+    HAL_NVIC_DisableIRQ(DMA2_Stream6_IRQn);   /* SDIO TX DMA */
+
+    /* Reduce SDIO clock for safe polling under RTOS.  Init at ClockDiv=0
+       (24 MHz) must succeed first; we slow it down here to ~6 MHz.
+       At 24 MHz 4-bit the FIFO overruns if any ISR delays the polling
+       loop by >5 us.  At 6 MHz the window is ~21 us — safe margin.
+       Only touches CLKDIV[7:0], leaves all other CLKCR bits intact.   */
+    MODIFY_REG(SDIO->CLKCR, SDIO_CLKCR_CLKDIV, 6U);  /* 48/(6+2) = 6 MHz */
+
+    *media_status = 0;
+    return UX_SUCCESS;
 }
 
 /**
@@ -403,28 +414,51 @@ UINT ux_device_msc_media_read_lun1(VOID *storage, ULONG lun, UCHAR *data_pointer
     (void)storage; (void)lun;
     *media_status = 0;
 
-    if (HAL_SD_ReadBlocks(&hsd, data_pointer, (uint32_t)lba,
-                          (uint32_t)number_blocks,
-                          SD_TRANSFER_TIMEOUT_MS) != HAL_OK)
+    for (uint32_t attempt = 0; attempt < SD_MAX_RETRIES; attempt++)
     {
-        *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_HARDWARE_ERROR;
-        return UX_ERROR;
+        /* Reset SDIO data-path & HAL state machine. */
+        hsd.Instance->DCTRL = 0U;
+        __HAL_SD_CLEAR_FLAG(&hsd, SDIO_STATIC_FLAGS);
+        hsd.State     = HAL_SD_STATE_READY;
+        hsd.ErrorCode = HAL_SD_ERROR_NONE;
+        hsd.Context   = SD_CONTEXT_NONE;
+
+        HAL_StatusTypeDef hal_status = HAL_SD_ReadBlocks(
+                &hsd, data_pointer, (uint32_t)lba,
+                (uint32_t)number_blocks, SD_TRANSFER_TIMEOUT_MS);
+
+        if (hal_status != HAL_OK)
+        {
+            /* Send CMD12 to abort any stuck multi-block transfer on card. */
+            (void)SDMMC_CmdStopTransfer(hsd.Instance);
+            __HAL_SD_CLEAR_FLAG(&hsd, SDIO_STATIC_FLAGS);
+            tx_thread_sleep(10);   /* give card time to settle */
+            continue;
+        }
+
+        /* Wait for card to return to TRANSFER state. */
+        uint32_t tick = HAL_GetTick();
+        UINT card_ok = 0;
+        while ((HAL_GetTick() - tick) < SD_TRANSFER_TIMEOUT_MS)
+        {
+            if (HAL_SD_GetCardState(&hsd) == HAL_SD_CARD_TRANSFER)
+            {
+                card_ok = 1;
+                break;
+            }
+            tx_thread_sleep(1);
+        }
+        if (card_ok)
+            return UX_SUCCESS;
+
+        /* Card-state wait timed out — CMD12 + retry. */
+        (void)SDMMC_CmdStopTransfer(hsd.Instance);
+        __HAL_SD_CLEAR_FLAG(&hsd, SDIO_STATIC_FLAGS);
+        tx_thread_sleep(10);
     }
 
-    /* Wait until the SD card is ready for the next operation.
-       tx_thread_sleep(1) yields the CPU instead of busy-waiting,
-       which is important in an RTOS context.                      */
-    uint32_t tick = HAL_GetTick();
-    while (HAL_SD_GetCardState(&hsd) != HAL_SD_CARD_TRANSFER)
-    {
-        if ((HAL_GetTick() - tick) >= SD_TRANSFER_TIMEOUT_MS)
-        {
-            *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_HARDWARE_ERROR;
-            return UX_ERROR;
-        }
-        tx_thread_sleep(1);
-    }
-    return UX_SUCCESS;
+    *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_HARDWARE_ERROR;
+    return UX_ERROR;
 }
 
 /**
@@ -436,26 +470,47 @@ UINT ux_device_msc_media_write_lun1(VOID *storage, ULONG lun, UCHAR *data_pointe
     (void)storage; (void)lun;
     *media_status = 0;
 
-    if (HAL_SD_WriteBlocks(&hsd, data_pointer, (uint32_t)lba,
-                           (uint32_t)number_blocks,
-                           SD_TRANSFER_TIMEOUT_MS) != HAL_OK)
+    for (uint32_t attempt = 0; attempt < SD_MAX_RETRIES; attempt++)
     {
-        *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_HARDWARE_ERROR;
-        return UX_ERROR;
+        hsd.Instance->DCTRL = 0U;
+        __HAL_SD_CLEAR_FLAG(&hsd, SDIO_STATIC_FLAGS);
+        hsd.State     = HAL_SD_STATE_READY;
+        hsd.ErrorCode = HAL_SD_ERROR_NONE;
+        hsd.Context   = SD_CONTEXT_NONE;
+
+        HAL_StatusTypeDef hal_status = HAL_SD_WriteBlocks(
+                &hsd, data_pointer, (uint32_t)lba,
+                (uint32_t)number_blocks, SD_TRANSFER_TIMEOUT_MS);
+
+        if (hal_status != HAL_OK)
+        {
+            (void)SDMMC_CmdStopTransfer(hsd.Instance);
+            __HAL_SD_CLEAR_FLAG(&hsd, SDIO_STATIC_FLAGS);
+            tx_thread_sleep(10);
+            continue;
+        }
+
+        uint32_t tick = HAL_GetTick();
+        UINT card_ok = 0;
+        while ((HAL_GetTick() - tick) < SD_TRANSFER_TIMEOUT_MS)
+        {
+            if (HAL_SD_GetCardState(&hsd) == HAL_SD_CARD_TRANSFER)
+            {
+                card_ok = 1;
+                break;
+            }
+            tx_thread_sleep(1);
+        }
+        if (card_ok)
+            return UX_SUCCESS;
+
+        (void)SDMMC_CmdStopTransfer(hsd.Instance);
+        __HAL_SD_CLEAR_FLAG(&hsd, SDIO_STATIC_FLAGS);
+        tx_thread_sleep(10);
     }
 
-    /* Wait until the SD card is ready (yield instead of busy-spin). */
-    uint32_t tick = HAL_GetTick();
-    while (HAL_SD_GetCardState(&hsd) != HAL_SD_CARD_TRANSFER)
-    {
-        if ((HAL_GetTick() - tick) >= SD_TRANSFER_TIMEOUT_MS)
-        {
-            *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_HARDWARE_ERROR;
-            return UX_ERROR;
-        }
-        tx_thread_sleep(1);
-    }
-    return UX_SUCCESS;
+    *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_HARDWARE_ERROR;
+    return UX_ERROR;
 }
 
 /**
