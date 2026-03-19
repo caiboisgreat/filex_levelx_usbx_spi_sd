@@ -106,7 +106,14 @@ static void lx_nor_init_thread_entry(ULONG arg)
 {
   (void)arg;
   if (lx_nor_w25q128_open() == LX_SUCCESS)
+  {
+    /* Run a defragment pass to free any reclaimable physical sectors.
+       This ensures that subsequent sector_write calls from the USB MSC
+       callbacks complete quickly without triggering expensive inline
+       garbage-collection during a SCSI WRITE command.                 */
+    (void)lx_nor_flash_defragment(&lx_nor_w25q128_flash);
     lx_nor_w25q128_ready = 1U;
+  }
 }
 
 /* USER CODE END 1 */

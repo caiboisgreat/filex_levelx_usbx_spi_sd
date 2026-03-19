@@ -88,6 +88,34 @@ static volatile UINT lun0_bootstrap_initialized = 0U;
 
 #define LUN0_COMMIT_BATCH_RW     4U
 
+/* Bitmap tracking which LBAs have a valid LevelX mapping.
+   LevelX's lx_nor_flash_sector_read allocates a NEW physical sector for
+   every read of an unmapped LBA (filling it with erased-flash garbage and
+   wasting free sectors).  We guard against this by only calling sector_read
+   for LBAs we know were successfully written via sector_write.
+   32130 sectors / 8 bits = 4017 bytes.                                    */
+#define LUN0_WRITTEN_BITMAP_WORDS  ((W25Q128_LX_USABLE_SECTORS + 31U) / 32U)
+static ULONG  lun0_lx_written_bitmap[LUN0_WRITTEN_BITMAP_WORDS];
+
+static void lun0_written_set(ULONG lba)
+{
+    if (lba < W25Q128_LX_USABLE_SECTORS)
+        lun0_lx_written_bitmap[lba >> 5] |= (1UL << (lba & 31U));
+}
+
+static void lun0_written_clear(ULONG lba)
+{
+    if (lba < W25Q128_LX_USABLE_SECTORS)
+        lun0_lx_written_bitmap[lba >> 5] &= ~(1UL << (lba & 31U));
+}
+
+static UINT lun0_written_test(ULONG lba)
+{
+    if (lba >= W25Q128_LX_USABLE_SECTORS)
+        return 0U;
+    return (lun0_lx_written_bitmap[lba >> 5] >> (lba & 31U)) & 1U;
+}
+
 static void ux_device_msc_lun0_bootstrap_init(void)
 {
     if (lun0_bootstrap_initialized)
@@ -203,6 +231,7 @@ static UINT ux_device_msc_commit_lun0_bootstrap_cache(ULONG *media_status, ULONG
                read path already returns zeroes for unmapped sectors.
                If there is a stale mapping for this LBA, release it.       */
             (void)lx_nor_flash_sector_release(&lx_nor_w25q128_flash, i);
+            lun0_written_clear(i);
         }
         else if (lun0_bootstrap_state[i] == LUN0_BOOTSTRAP_STATE_DATA)
         {
@@ -216,6 +245,7 @@ static UINT ux_device_msc_commit_lun0_bootstrap_cache(ULONG *media_status, ULONG
             if (lx_nor_flash_sector_write(&lx_nor_w25q128_flash, i,
                                           ux_device_msc_lun0_slot_ptr(slot)) != LX_SUCCESS)
                 continue;   /* skip on error, retry on next opportunity */
+            lun0_written_set(i);
             ux_device_msc_lun0_release_slot(i);
         }
         lun0_bootstrap_state[i] = LUN0_BOOTSTRAP_STATE_EMPTY;
@@ -257,6 +287,7 @@ UINT ux_device_msc_media_read_lun0(VOID *storage, ULONG lun, UCHAR *data_pointer
                                     ULONG number_blocks, ULONG lba, ULONG *media_status)
 {
     (void)storage; (void)lun;
+    ux_device_msc_lun0_bootstrap_init();
     if (!lx_nor_w25q128_ready)
     {
         /* Return zeroes + overlay cached metadata so host sees a consistent
@@ -270,17 +301,24 @@ UINT ux_device_msc_media_read_lun0(VOID *storage, ULONG lun, UCHAR *data_pointer
     for (ULONG i = 0; i < number_blocks; i++)
     {
         UCHAR *sector_buf = data_pointer + (i * MSC_BLOCK_SIZE);
-        if (lx_nor_flash_sector_read(&lx_nor_w25q128_flash, lba + i, sector_buf) != LX_SUCCESS)
+        ULONG  cur_lba = lba + i;
+
+        /* Only call lx_nor_flash_sector_read for sectors that were
+           previously written via sector_write.  LevelX's sector_read
+           allocates a fresh physical sector for every read of an unmapped
+           LBA (filling it with erased-flash 0xFF garbage and consuming a
+           free sector).  Avoiding that prevents free-sector exhaustion
+           which would cause subsequent sector_write to fail.            */
+        if (lun0_written_test(cur_lba))
         {
-            /* Sector has no LevelX mapping yet: either it is still pending in
-               the bootstrap cache (not yet committed) or it was simply never
-               written.  Zero-fill so the overlay below can supply cached data
-               if present, or return a blank sector otherwise.
-               This prevents a spurious HARDWARE_ERROR that would cause Windows
-               to report "Format did not complete successfully."              */
+            if (lx_nor_flash_sector_read(&lx_nor_w25q128_flash, cur_lba, sector_buf) != LX_SUCCESS)
+                memset(sector_buf, 0, MSC_BLOCK_SIZE);
+        }
+        else
+        {
             memset(sector_buf, 0, MSC_BLOCK_SIZE);
         }
-        ux_device_msc_lun0_overlay_sector(lba + i, sector_buf);
+        ux_device_msc_lun0_overlay_sector(cur_lba, sector_buf);
     }
     *media_status = 0;
     return UX_SUCCESS;
@@ -293,6 +331,7 @@ UINT ux_device_msc_media_write_lun0(VOID *storage, ULONG lun, UCHAR *data_pointe
                                      ULONG number_blocks, ULONG lba, ULONG *media_status)
 {
     (void)storage; (void)lun;
+    ux_device_msc_lun0_bootstrap_init();
     if (!lx_nor_w25q128_ready)
     {
         if (ux_device_msc_lun0_cacheable(lba, number_blocks) != 0U)
@@ -316,8 +355,8 @@ UINT ux_device_msc_media_write_lun0(VOID *storage, ULONG lun, UCHAR *data_pointe
         *media_status = 0;
         return UX_SUCCESS;
     }
-    /* LevelX ready: drain any cached metadata (best-effort), then write real data. */
-    (void)ux_device_msc_commit_lun0_bootstrap_cache(media_status, LUN0_COMMIT_BATCH_RW);
+    /* LevelX ready: drain ALL cached metadata, then write real data. */
+    (void)ux_device_msc_commit_lun0_bootstrap_cache(media_status, LUN0_BOOTSTRAP_CACHE_SECTORS);
     for (ULONG i = 0; i < number_blocks; i++)
     {
         UCHAR *src = data_pointer + (i * MSC_BLOCK_SIZE);
@@ -329,9 +368,7 @@ UINT ux_device_msc_media_write_lun0(VOID *storage, ULONG lun, UCHAR *data_pointe
         if (ux_device_msc_lun0_sector_is_zero(src) != 0U)
         {
             (void)lx_nor_flash_sector_release(&lx_nor_w25q128_flash, cur);
-            /* Clear bootstrap cache so overlay never returns stale data.
-               Use STATE_ZERO as safety: even if sector_release failed
-               and old LevelX data persists, overlay forces zeroes.     */
+            lun0_written_clear(cur);
             if (cur < LUN0_BOOTSTRAP_CACHE_SECTORS)
             {
                 if (lun0_bootstrap_state[cur] == LUN0_BOOTSTRAP_STATE_DATA)
@@ -351,12 +388,16 @@ UINT ux_device_msc_media_write_lun0(VOID *storage, ULONG lun, UCHAR *data_pointe
                 (void)ux_device_msc_lun0_cache_sector(cur, src);
             continue;
         }
-        /* Successful LevelX write: clear any bootstrap shadow for this LBA */
-        if (cur < LUN0_BOOTSTRAP_CACHE_SECTORS)
+        else
         {
-            if (lun0_bootstrap_state[cur] == LUN0_BOOTSTRAP_STATE_DATA)
-                ux_device_msc_lun0_release_slot(cur);
-            lun0_bootstrap_state[cur] = LUN0_BOOTSTRAP_STATE_EMPTY;
+            /* Successful LevelX write: mark LBA as written and clear cache */
+            lun0_written_set(cur);
+            if (cur < LUN0_BOOTSTRAP_CACHE_SECTORS)
+            {
+                if (lun0_bootstrap_state[cur] == LUN0_BOOTSTRAP_STATE_DATA)
+                    ux_device_msc_lun0_release_slot(cur);
+                lun0_bootstrap_state[cur] = LUN0_BOOTSTRAP_STATE_EMPTY;
+            }
         }
     }
     *media_status = 0;
@@ -364,12 +405,18 @@ UINT ux_device_msc_media_write_lun0(VOID *storage, ULONG lun, UCHAR *data_pointe
 }
 
 /**
-  * @brief  Flush callback for LUN 0 – always succeed; commits are opportunistic.
+  * @brief  Flush callback for LUN 0 – commit all cached bootstrap sectors.
+  *
+  * Windows sends SYNCHRONIZE CACHE after completing a write sequence (e.g.
+  * MBR initialisation, format).  If any bootstrap-cached sectors have not
+  * yet been committed to LevelX flash, drain them now.
   */
 UINT ux_device_msc_media_flush_lun0(VOID *storage, ULONG lun, ULONG number_blocks,
                                      ULONG lba, ULONG *media_status)
 {
     (void)storage; (void)lun; (void)number_blocks; (void)lba;
+    if (lx_nor_w25q128_ready)
+        (void)ux_device_msc_commit_lun0_bootstrap_cache(media_status, LUN0_BOOTSTRAP_CACHE_SECTORS);
     *media_status = 0;
     return UX_SUCCESS;
 }

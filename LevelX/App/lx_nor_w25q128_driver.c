@@ -146,6 +146,9 @@ UINT lx_nor_w25q128_driver_initialize(LX_NOR_FLASH *nor_flash)
   * @brief  Initialize W25Q128 hardware and open the LevelX NOR instance.
   *
   * Call once from application init (before USBX MSC callbacks are invoked).
+  * If the flash contains corrupted LevelX metadata (e.g. from a previous
+  * aborted format/write), the initial open will fail.  In that case we
+  * erase the entire chip so LevelX can create a fresh layout on retry.
   */
 UINT lx_nor_w25q128_open(void)
 {
@@ -159,6 +162,18 @@ UINT lx_nor_w25q128_open(void)
     status = lx_nor_flash_open(&lx_nor_w25q128_flash,
                                "W25Q128",
                                lx_nor_w25q128_driver_initialize);
+
+    if (status != LX_SUCCESS)
+    {
+        /* Flash metadata is corrupted or uninitialised.
+           Erase full chip and retry so LevelX performs a clean format. */
+        if (W25Q128_EraseChip() != HAL_OK)
+            return LX_ERROR;
+
+        status = lx_nor_flash_open(&lx_nor_w25q128_flash,
+                                   "W25Q128",
+                                   lx_nor_w25q128_driver_initialize);
+    }
 
     return status;
 }
