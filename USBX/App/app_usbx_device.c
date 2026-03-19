@@ -157,7 +157,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
   storage_parameter.ux_slave_class_storage_parameter_lun[1]
       .ux_slave_class_storage_media_type            = UX_SLAVE_CLASS_STORAGE_MEDIA_FAT_DISK;
   storage_parameter.ux_slave_class_storage_parameter_lun[1]
-      .ux_slave_class_storage_media_removable_flag  = 1;
+      .ux_slave_class_storage_media_removable_flag  = 0x80;
   storage_parameter.ux_slave_class_storage_parameter_lun[1]
       .ux_slave_class_storage_media_read_only_flag  = 0;
   storage_parameter.ux_slave_class_storage_parameter_lun[1]
