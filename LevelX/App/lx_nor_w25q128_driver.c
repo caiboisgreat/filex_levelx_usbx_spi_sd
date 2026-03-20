@@ -4,10 +4,10 @@
   * @brief   LevelX NOR driver for W25Q128 (SPI1, 64KB block erase)
   *
   * LevelX passes a ULONG* "flash_address" to the read/write driver.
-  * When lx_nor_flash_base_address = NULL (0), this pointer IS the
-  * word-offset from the start of flash:
-  *   byte_address = (uint32_t)flash_address * sizeof(ULONG)
-  *                = (uint32_t)flash_address << 2
+ * When lx_nor_flash_base_address = NULL (0), ULONG* pointer arithmetic
+ * produces a pointer whose numeric value is already the byte offset:
+ *   flash_address = NULL + word_offset  =>  (ULONG*)(word_offset * 4)
+ *   byte_address  = (uintptr_t)flash_address   // already in bytes!
   *
   * The block_erase callback receives the block INDEX (0..255); byte address
   * is block * 64KB = block * 65536.
@@ -30,7 +30,9 @@ static ULONG sector_buffer[LX_NOR_SECTOR_SIZE];
 
 /**
   * @brief  Read 'words' ULONGs from the NOR flash into 'destination'.
-  * @param  flash_address  Word-aligned offset pointer (base_address = NULL)
+  * @param  flash_address  Pointer computed as (base_address + word_offset).
+  *         With base_address = NULL the numeric value of this pointer
+  *         IS the byte address (ULONG* arithmetic scales by 4).
   * @param  destination    Output buffer
   * @param  words          Number of 32-bit words to read
   */
@@ -38,7 +40,7 @@ static UINT lx_nor_w25q128_driver_read(ULONG *flash_address,
                                         ULONG *destination,
                                         ULONG  words)
 {
-    uint32_t byte_addr = (uint32_t)((uintptr_t)flash_address) << 2;
+    uint32_t byte_addr = (uint32_t)((uintptr_t)flash_address);
     uint32_t byte_len  = words << 2;
 
     if (W25Q128_Read((uint8_t*)destination, byte_addr, byte_len) != HAL_OK)
@@ -55,7 +57,7 @@ static UINT lx_nor_w25q128_driver_write(ULONG *flash_address,
                                          ULONG *source,
                                          ULONG  words)
 {
-    uint32_t byte_addr = (uint32_t)((uintptr_t)flash_address) << 2;
+    uint32_t byte_addr = (uint32_t)((uintptr_t)flash_address);
     uint32_t byte_len  = words << 2;
 
     if (W25Q128_Write((const uint8_t*)source, byte_addr, byte_len) != HAL_OK)

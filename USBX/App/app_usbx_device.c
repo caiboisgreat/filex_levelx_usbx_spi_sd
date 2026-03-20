@@ -30,6 +30,7 @@
 #include "ux_device_msc.h"
 #include "lx_nor_w25q128_driver.h"
 #include "sdio.h"
+#include "app_filex.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -135,7 +136,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
   storage_parameter.ux_slave_class_storage_parameter_lun[0]
       .ux_slave_class_storage_media_type            = UX_SLAVE_CLASS_STORAGE_MEDIA_FAT_DISK;
   storage_parameter.ux_slave_class_storage_parameter_lun[0]
-      .ux_slave_class_storage_media_removable_flag  = 0;
+      .ux_slave_class_storage_media_removable_flag  = 0x80;
   storage_parameter.ux_slave_class_storage_parameter_lun[0]
       .ux_slave_class_storage_media_read_only_flag  = 0;
   storage_parameter.ux_slave_class_storage_parameter_lun[0]
@@ -218,8 +219,12 @@ static void usb_hw_init_thread_entry(ULONG arg)
     /* 2. Link USBX to the HAL PCD handle. */
     _ux_dcd_stm32_initialize(0, (ULONG)&hpcd_USB_OTG_FS);
 
-    /* 3. Start USB enumeration immediately so Windows can detect the device.
-       Individual LUN readiness is handled in the MSC callbacks. */
+    /* 3. Wait for FileX to finish formatting/verifying all filesystems
+       so that Windows sees valid FAT volumes from the first read.   */
+    while (!fx_filesystems_ready)
+        tx_thread_sleep(10);
+
+    /* 4. Start USB enumeration – media is now ready on all LUNs. */
     HAL_PCD_Start(&hpcd_USB_OTG_FS);
 
     /* Thread has completed its one-shot init; suspend forever            */

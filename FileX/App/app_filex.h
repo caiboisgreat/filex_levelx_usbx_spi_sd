@@ -61,7 +61,17 @@ UINT MX_FileX_Init(VOID *memory_ptr);
 /* USER CODE END PD */
 
 /* USER CODE BEGIN 1 */
+/* FileX media instances – available for application-level file operations */
+extern FX_MEDIA  fx_flash_media;
+extern FX_MEDIA  fx_sd_media;
 
+/* Set to 1 once the corresponding filesystem is mounted successfully */
+extern volatile UINT fx_flash_media_ready;
+extern volatile UINT fx_sd_media_ready;
+
+/* Set to 1 after both Flash and SD filesystems are initialised.
+   Used by USBX to delay USB enumeration until media is valid.  */
+extern volatile UINT fx_filesystems_ready;
 /* USER CODE END 1 */
 #ifdef __cplusplus
 }

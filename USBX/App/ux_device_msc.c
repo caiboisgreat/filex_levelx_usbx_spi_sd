@@ -263,6 +263,82 @@ static UINT ux_device_msc_commit_lun0_bootstrap_cache(ULONG *media_status, ULONG
 }
 
 /* ===========================================================================
+ *  LUN 0  –  External sync for FileX / other non-MSC writers
+ * =========================================================================*/
+
+void ux_device_msc_lun0_notify_sector_written(ULONG lba)
+{
+    lun0_written_set(lba);
+    /* Clear any stale bootstrap cache entry so MSC reads from LevelX */
+    if (lba < LUN0_BOOTSTRAP_CACHE_SECTORS)
+    {
+        if (lun0_bootstrap_state[lba] == LUN0_BOOTSTRAP_STATE_DATA)
+            ux_device_msc_lun0_release_slot(lba);
+        lun0_bootstrap_state[lba] = LUN0_BOOTSTRAP_STATE_EMPTY;
+    }
+}
+
+void ux_device_msc_lun0_notify_sector_released(ULONG lba)
+{
+    lun0_written_clear(lba);
+    if (lba < LUN0_BOOTSTRAP_CACHE_SECTORS)
+    {
+        if (lun0_bootstrap_state[lba] == LUN0_BOOTSTRAP_STATE_DATA)
+            ux_device_msc_lun0_release_slot(lba);
+        lun0_bootstrap_state[lba] = LUN0_BOOTSTRAP_STATE_EMPTY;
+    }
+}
+
+void ux_device_msc_lun0_rebuild_written_bitmap(void)
+{
+    /* Scan LevelX NOR mapping tables to discover every logical sector that
+       has a valid physical mapping and set the corresponding bitmap bit.
+       Needed after reboot because the bitmap is BSS-zero-initialised and
+       fx_media_open (read-only path) does not trigger write callbacks.   */
+    LX_NOR_FLASH *nor = &lx_nor_w25q128_flash;
+
+#ifdef LX_THREAD_SAFE_ENABLE
+    tx_mutex_get(&nor->lx_nor_flash_mutex, TX_WAIT_FOREVER);
+#endif
+
+    ULONG words_per_block   = nor->lx_nor_flash_words_per_block;
+    ULONG sectors_per_block = nor->lx_nor_flash_physical_sectors_per_block;
+    ULONG mapping_offset    = nor->lx_nor_flash_block_physical_sector_mapping_offset;
+
+    for (ULONG b = 0; b < nor->lx_nor_flash_total_blocks; b++)
+    {
+        ULONG *block_base = nor->lx_nor_flash_base_address +
+                            (b * words_per_block);
+
+        for (ULONG s = 0; s < sectors_per_block; s++)
+        {
+            ULONG entry;
+            ULONG *entry_addr = block_base + mapping_offset + s;
+
+            if (_lx_nor_flash_driver_read(nor, entry_addr, &entry, 1) != LX_SUCCESS)
+                continue;
+
+            /* Valid current mapping: VALID(0x80) SET, SUPERCEDED(0x40) SET
+               (not yet superceded), MAPPING_NOT_VALID(0x20) CLEAR.        */
+            if ((entry & (LX_NOR_PHYSICAL_SECTOR_VALID |
+                          LX_NOR_PHYSICAL_SECTOR_SUPERCEDED |
+                          LX_NOR_PHYSICAL_SECTOR_MAPPING_NOT_VALID))
+                 == (LX_NOR_PHYSICAL_SECTOR_VALID |
+                     LX_NOR_PHYSICAL_SECTOR_SUPERCEDED))
+            {
+                ULONG logical_sector = entry & LX_NOR_LOGICAL_SECTOR_MASK;
+                if (logical_sector < W25Q128_LX_USABLE_SECTORS)
+                    lun0_written_set(logical_sector);
+            }
+        }
+    }
+
+#ifdef LX_THREAD_SAFE_ENABLE
+    tx_mutex_put(&nor->lx_nor_flash_mutex);
+#endif
+}
+
+/* ===========================================================================
  *  LUN 0  –  W25Q128 NOR Flash via LevelX
  * =========================================================================*/
 
@@ -274,7 +350,8 @@ UINT ux_device_msc_media_status_lun0(VOID *storage, ULONG lun, ULONG media_id,
 {
     (void)storage; (void)lun; (void)media_id;
     ux_device_msc_lun0_bootstrap_init();
-    /* Always READY so Disk Management shows the disk immediately.
+    /* USB enumeration is deferred until FileX has finished formatting,
+       so by the time this callback runs the media is always valid.
        Opportunistically drain the bootstrap cache once LevelX is ready. */
     if (lx_nor_w25q128_ready)
         (void)ux_device_msc_commit_lun0_bootstrap_cache(media_status, LUN0_COMMIT_BATCH_RW);

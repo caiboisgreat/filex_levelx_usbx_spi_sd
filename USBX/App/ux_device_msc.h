@@ -76,6 +76,13 @@ UINT ux_device_msc_media_flush_lun1 (VOID *storage, ULONG lun, ULONG number_bloc
                                      ULONG lba, ULONG *media_status);
 
 /* Commit cached LUN0 bootstrap writes after LevelX open completes. */
+
+/* Notify MSC that a LUN0 sector was written/released outside the MSC path
+   (e.g. by FileX format).  Keeps the written-bitmap and bootstrap cache
+   in sync so that MSC reads return the correct data to the USB host.     */
+void ux_device_msc_lun0_notify_sector_written(ULONG lba);
+void ux_device_msc_lun0_notify_sector_released(ULONG lba);
+void ux_device_msc_lun0_rebuild_written_bitmap(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

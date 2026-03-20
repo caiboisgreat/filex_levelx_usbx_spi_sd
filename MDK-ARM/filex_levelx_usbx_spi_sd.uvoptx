@@ -152,52 +152,59 @@
         <Bp>
           <Number>0</Number>
           <Type>0</Type>
-          <LineNumber>180</LineNumber>
+          <LineNumber>425</LineNumber>
           <EnabledFlag>1</EnabledFlag>
-          <Address>0</Address>
+          <Address>134317652</Address>
           <ByteObject>0</ByteObject>
           <HtxType>0</HtxType>
           <ManyObjects>0</ManyObjects>
           <SizeOfObject>0</SizeOfObject>
           <BreakByAccess>0</BreakByAccess>
-          <BreakIfRCount>0</BreakIfRCount>
-          <Filename>../USBX/App/ux_device_msc.c</Filename>
+          <BreakIfRCount>1</BreakIfRCount>
+          <Filename>../FileX/App/app_filex.c</Filename>
           <ExecCommand></ExecCommand>
-          <Expression></Expression>
+          <Expression>\\filex_levelx_usbx_spi_sd\../FileX/App/app_filex.c\425</Expression>
         </Bp>
         <Bp>
           <Number>1</Number>
           <Type>0</Type>
-          <LineNumber>151</LineNumber>
+          <LineNumber>127</LineNumber>
           <EnabledFlag>1</EnabledFlag>
-          <Address>134297384</Address>
+          <Address>134240868</Address>
           <ByteObject>0</ByteObject>
           <HtxType>0</HtxType>
           <ManyObjects>0</ManyObjects>
           <SizeOfObject>0</SizeOfObject>
           <BreakByAccess>0</BreakByAccess>
           <BreakIfRCount>1</BreakIfRCount>
-          <Filename>../AZURE_RTOS/App/app_azure_rtos.c</Filename>
+          <Filename>../FileX/App/app_filex.c</Filename>
           <ExecCommand></ExecCommand>
-          <Expression>\\filex_levelx_usbx_spi_sd\../AZURE_RTOS/App/app_azure_rtos.c\151</Expression>
+          <Expression>\\filex_levelx_usbx_spi_sd\../FileX/App/app_filex.c\127</Expression>
         </Bp>
         <Bp>
           <Number>2</Number>
           <Type>0</Type>
-          <LineNumber>216</LineNumber>
+          <LineNumber>418</LineNumber>
           <EnabledFlag>1</EnabledFlag>
-          <Address>134297410</Address>
+          <Address>134317594</Address>
           <ByteObject>0</ByteObject>
           <HtxType>0</HtxType>
           <ManyObjects>0</ManyObjects>
           <SizeOfObject>0</SizeOfObject>
           <BreakByAccess>0</BreakByAccess>
           <BreakIfRCount>1</BreakIfRCount>
-          <Filename>../USBX/App/app_usbx_device.c</Filename>
+          <Filename>../FileX/App/app_filex.c</Filename>
           <ExecCommand></ExecCommand>
-          <Expression>\\filex_levelx_usbx_spi_sd\../USBX/App/app_usbx_device.c\216</Expression>
+          <Expression>\\filex_levelx_usbx_spi_sd\../FileX/App/app_filex.c\418</Expression>
         </Bp>
       </Breakpoint>
+      <WatchWindow1>
+        <Ww>
+          <count>0</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>status</ItemText>
+        </Ww>
+      </WatchWindow1>
       <Tracepoint>
         <THDelay>0</THDelay>
       </Tracepoint>
@@ -272,7 +279,7 @@
 
   <Group>
     <GroupName>Application/User/Core</GroupName>
-    <tvExp>0</tvExp>
+    <tvExp>1</tvExp>
     <tvExpOptDlg>0</tvExpOptDlg>
     <cbSel>0</cbSel>
     <RteFlg>0</RteFlg>

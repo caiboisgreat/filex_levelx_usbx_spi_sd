@@ -105,13 +105,26 @@ void MX_ThreadX_Init(void)
 static void lx_nor_init_thread_entry(ULONG arg)
 {
   (void)arg;
-  if (lx_nor_w25q128_open() == LX_SUCCESS)
+  UINT status = LX_ERROR;
+
+  /* Retry LevelX open up to 3 times with delays between attempts.
+     lx_nor_w25q128_open() already handles one chip-erase-and-retry
+     internally, so 3 outer retries covers transient SPI issues.    */
+  for (UINT attempt = 0; attempt < 3U; attempt++)
   {
-    /* Run a defragment pass to free any reclaimable physical sectors.
-       This ensures that subsequent sector_write calls from the USB MSC
-       callbacks complete quickly without triggering expensive inline
-       garbage-collection during a SCSI WRITE command.                 */
-    (void)lx_nor_flash_defragment(&lx_nor_w25q128_flash);
+    status = lx_nor_w25q128_open();
+    if (status == LX_SUCCESS)
+      break;
+    tx_thread_sleep(100);   /* 1 second before retry */
+  }
+
+  if (status == LX_SUCCESS)
+  {
+    /* Mark ready so that FileX and MSC can start using the flash.
+       Defragment is skipped here – it is an optimisation that can
+       take minutes on a 16 MB flash (256 block erases at 3 s each)
+       and would block all lower-priority threads.  LevelX handles
+       garbage-collection inline during sector_write when needed.   */
     lx_nor_w25q128_ready = 1U;
   }
 }

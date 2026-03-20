@@ -11,6 +11,9 @@
 #include "w25q128.h"
 #include <string.h>
 
+/* Check if ThreadX scheduler is running so we can yield during long waits */
+#include "tx_api.h"
+
 /* Timeout for HAL_SPI_Transmit/Receive polling calls */
 #define SPI_TIMEOUT_MS   100U
 
@@ -94,6 +97,11 @@ HAL_StatusTypeDef W25Q128_WaitForReady(uint32_t timeout_ms)
     {
         if ((HAL_GetTick() - tick) >= timeout_ms)
             return HAL_TIMEOUT;
+        /* Yield to other RTOS threads during long flash operations
+           (chip erase can take 120s, block erase 3s).  Only yield
+           when called from a ThreadX thread context.               */
+        if (tx_thread_identify() != TX_NULL)
+            tx_thread_sleep(1);
     }
     return HAL_OK;
 }
