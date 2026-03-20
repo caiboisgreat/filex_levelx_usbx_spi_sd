@@ -68,11 +68,7 @@
 #define SD_TRANSFER_TIMEOUT_MS  5000U   /* polling timeout for SDIO HAL */
 #define SD_MAX_RETRIES          3U      /* retry count for SD read/write */
 
-/* LUN 1 media-change detection: after formatting (write to LBA 0) and
-   flush, the next TEST_UNIT_READY returns UNIT ATTENTION to tell Windows
-   to re-scan partitions and mount the new volume in Explorer.           */
-static volatile UINT lun1_lba0_dirty  = 0U;   /* LBA 0 written since last flush */
-static volatile UINT lun1_media_changed = 0U; /* pending UNIT ATTENTION         */
+
 
 /* Low-LBA bootstrap cache: buffers metadata writes before LevelX is ready.
    Covers LBA 0-3071 (3072 * 512 = 1.5 MB), spanning the FAT boot sector at
@@ -454,18 +450,6 @@ UINT ux_device_msc_media_status_lun1(VOID *storage, ULONG lun, ULONG media_id,
        Only touches CLKDIV[7:0], leaves all other CLKCR bits intact.   */
     MODIFY_REG(SDIO->CLKCR, SDIO_CLKCR_CLKDIV, 6U);  /* 48/(6+2) = 6 MHz */
 
-    /* After a format or MBR write, return UNIT ATTENTION once so that
-       Windows Volume Manager re-scans partitions and assigns a drive
-       letter.  SYNCHRONIZE_CACHE calls this callback before the flush
-       callback, so lun1_media_changed is not yet set at that point —
-       the UNIT ATTENTION fires on the NEXT TEST_UNIT_READY instead.   */
-    if (lun1_media_changed)
-    {
-        lun1_media_changed = 0U;
-        *media_status = 0x06U | (0x28U << 8);   /* UNIT ATTENTION, NOT READY TO READY */
-        return UX_ERROR;
-    }
-
     *media_status = 0;
     return UX_SUCCESS;
 }
@@ -535,11 +519,6 @@ UINT ux_device_msc_media_write_lun1(VOID *storage, ULONG lun, UCHAR *data_pointe
     (void)storage; (void)lun;
     *media_status = 0;
 
-    /* Detect MBR / partition-table writes (LBA 0) so that the flush
-       callback can later raise UNIT ATTENTION for volume re-mount.  */
-    if (lba == 0U)
-        lun1_lba0_dirty = 1U;
-
     for (uint32_t attempt = 0; attempt < SD_MAX_RETRIES; attempt++)
     {
         hsd.Instance->DCTRL = 0U;
@@ -590,16 +569,6 @@ UINT ux_device_msc_media_flush_lun1(VOID *storage, ULONG lun, ULONG number_block
                                      ULONG lba, ULONG *media_status)
 {
     (void)storage; (void)lun; (void)number_blocks; (void)lba;
-
-    /* If the MBR (LBA 0) was written since the last flush, arm the
-       media-changed flag.  The SYNCHRONIZE_CACHE handler calls the
-       status callback BEFORE the flush callback, so the UNIT ATTENTION
-       fires on the NEXT TEST_UNIT_READY — after all writes are flushed. */
-    if (lun1_lba0_dirty)
-    {
-        lun1_lba0_dirty   = 0U;
-        lun1_media_changed = 1U;
-    }
 
     *media_status = 0;
     return UX_SUCCESS;
